@@ -2,164 +2,243 @@ import React, { useEffect, useState } from "react";
 import axios from "axios";
 import { useNavigate } from "react-router-dom";
 import { useUser } from "../../authentication/UserState";
-import "../../css/App.css"; 
+import "../../css/App.css";
 
 const SPOTIFY_AUTH = "https://accounts.spotify.com/authorize";
-const REDIRECT_URI = "http://localhost:3000/account/spotify"; // Needed to change the uri to this as there was issues with redirecting to the home page right after spotify user is authenticated
-const CLIENT_ID = "82051e28a62540019c2de5c903d8bca1";
+const SPOTIFY_TOKEN = "https://accounts.spotify.com/api/token";
 
-/*
-    Spotify scope array that allows us to get all neccesary data from the user's spotify acc
-    Link to definitions of scopes: https://developer.spotify.com/documentation/web-api/concepts/scopes
-*/
+const REDIRECT_URI = "http://127.0.0.1:3000/account/spotify";
+const CLIENT_ID = "a8c9857ace8449f290ed14c54c878e1f";
+
 const spotifyScopes = [
-    'user-read-recently-played',
-    'user-read-email',
-    'user-read-private'
+  "user-read-recently-played",
+  "user-read-email",
+  "user-read-private",
 ];
-const SCOPES_URL_PARAM = spotifyScopes.join("%20"); // Joining all the scopes together by using the SPACE_ENCODE variable that performs percent coding and represents the space in the url.  
- 
-// Function that returns the access token generated once user's spotify account is authenticated 
-export const getTokenAfterAuth = () => {
-    return window.location.hash
-    .substring(1)
-    .split("&")
-    .reduce((initial, item) => {
-      var parts = item.split("=");
-      initial[parts[0]] = decodeURIComponent(parts[1]);
 
-      return initial;
-    }, {});
+const ACCESS_TOKEN_KEY = "spotify_access_token";
+const ACCESS_TOKEN_EXPIRES_AT_KEY = "spotify_access_token_expires_at";
+const CODE_VERIFIER_KEY = "spotify_pkce_code_verifier";
+
+/* -------------------- PKCE helpers -------------------- */
+const randomString = (length = 64) => {
+  const possible =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~";
+  let text = "";
+  const values = crypto.getRandomValues(new Uint8Array(length));
+  for (let i = 0; i < length; i++) text += possible[values[i] % possible.length];
+  return text;
 };
 
+const base64UrlEncode = (arrayBuffer) => {
+  const bytes = new Uint8Array(arrayBuffer);
+  let binary = "";
+  for (let i = 0; i < bytes.byteLength; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+};
 
-// Function that will display the page that asks the user to connect to their spotify acc for our application
-export const handleLogin = async () => {
-    window.location = `${SPOTIFY_AUTH}?client_id=${CLIENT_ID}&redirect_uri=${REDIRECT_URI}&scope=${SCOPES_URL_PARAM}&response_type=token&show_dialog=true`;
+const sha256 = async (plain) => {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plain);
+  return await crypto.subtle.digest("SHA-256", data);
+};
+
+const storeToken = (token, expiresInSeconds) => {
+  localStorage.setItem(ACCESS_TOKEN_KEY, token);
+  if (typeof expiresInSeconds === "number" && expiresInSeconds > 0) {
+    localStorage.setItem(
+      ACCESS_TOKEN_EXPIRES_AT_KEY,
+      String(Date.now() + expiresInSeconds * 1000)
+    );
+  } else {
+    localStorage.removeItem(ACCESS_TOKEN_EXPIRES_AT_KEY);
+  }
+};
+
+const getStoredToken = () => {
+  const token = localStorage.getItem(ACCESS_TOKEN_KEY);
+  const expiresAt = Number(localStorage.getItem(ACCESS_TOKEN_EXPIRES_AT_KEY));
+  if (!token) return null;
+  if (!expiresAt) return token; // fallback
+  if (Number.isNaN(expiresAt)) return token;
+  return Date.now() >= expiresAt ? null : token;
+};
+
+const clearStoredToken = () => {
+  localStorage.removeItem(ACCESS_TOKEN_KEY);
+  localStorage.removeItem(ACCESS_TOKEN_EXPIRES_AT_KEY);
+};
+
+/* -------------------- Login redirect (PKCE) -------------------- */
+export const handleLogin = async (e) => {
+  if (e?.preventDefault) e.preventDefault();
+
+  const codeVerifier = randomString(96);
+  sessionStorage.setItem(CODE_VERIFIER_KEY, codeVerifier);
+
+  const hashed = await sha256(codeVerifier);
+  const codeChallenge = base64UrlEncode(hashed);
+
+  const params = new URLSearchParams({
+    client_id: CLIENT_ID,
+    response_type: "code",
+    redirect_uri: REDIRECT_URI,
+    scope: spotifyScopes.join(" "),
+    code_challenge_method: "S256",
+    code_challenge: codeChallenge,
+    show_dialog: "true",
+  });
+
+  window.location.assign(`${SPOTIFY_AUTH}?${params.toString()}`);
 };
 
 export const SpotifyLogin = () => {
-    const [alertMessage, setAlertMessage] = useState("");
-    const [user, setUser] = useUser();
-    const [userInfo, setUserInfo] = useState(null); // State variable to save user's spotify info into teh userState
-    const navigate = useNavigate();
-    
-    useEffect(() => {
-        const getUserSpotifyInfo = async () => {
-    
-            // Check if there's a hash in the URL - no hash, that means access token was not generated
-            if (window.location.hash !== "") {
-                const { access_token } = getTokenAfterAuth(window.location.hash);
-                localStorage.setItem("access_token", access_token);
-                console.log(access_token);
-                window.location.hash = ""; // REMOVES ACCESS TOKEN FROM URL ONCE SIGN IN IS AUTHENTICATED.
-    
-                try {
-                    // Fetch user information from Spotify using api below
-                    const userInfoResponse = await axios.get("https://api.spotify.com/v1/me", {
-                        headers: {
-                            Authorization: "Bearer " + access_token,
-                            "Content-Type": "application/json",
-                        },
-                    });
+  const [alertMessage, setAlertMessage] = useState("");
+  const [user, setUser] = useUser();
+  const [userInfo, setUserInfo] = useState(null);
+  const navigate = useNavigate();
 
-                    const userInfo = userInfoResponse.data; // Needed to define 
+  useEffect(() => {
+    const run = async () => {
+      try {
+        const url = new URL(window.location.href);
+        const error = url.searchParams.get("error");
+        const code = url.searchParams.get("code");
 
-
-                    // Before proceeding, check that userInfo is not null or undefined
-                    if (!userInfo) {
-                        throw new Error("User information is not available.");
-                    }
-
-                    
-                    // Fetch spotify accounts details (can also check in console).
-                    const spotifyUserInfo = {
-                        userId: userInfo.id,
-                        userUrl: userInfo.external_urls.spotify,
-                        username: userInfo.display_name,
-                        email: userInfo.email,
-                    };
-                    console.log(spotifyUserInfo);
-                    localStorage.setItem("username", spotifyUserInfo.username);
-                    setUserInfo(spotifyUserInfo);
-                    setAlertMessage("Spotify account connected!");
-    
-             
-                    // Connect to spotify login api to store data into mongodb
-                    axios.post("http://localhost:8082/api/spotifylogin", {
-                        spotifyID: userInfo.id,
-                        spotifyURL: userInfo.external_urls.spotify,
-                        displayName: userInfo.display_name,
-                        spotifyEmail: userInfo.email
-                    })
-                    .then((res) => {
-                        const data = res.data;
-                        console.log(data, "spotifyUserLogin");
-                        localStorage.setItem("userSpotifyInfo", spotifyUserInfo);
-                        if(data.status === "ok") {
-                            // Now, update the user state
-                            setUser({
-                                ...user,
-                                isAuthenticated: true,
-                                spotifyAccount: spotifyUserInfo.username, 
-                
-                            });
-                            setAlertMessage("Spotify account connected!");
-                            navigate("/account/spotify");
-                        } else {
-                            // Handle errors like not being able to store the user info
-                            throw new Error("Unable to store spotify account into TuneTalk's database.");
-                        }
-                        
-                    });
-
-                } catch (error) {
-                    console.error("Error connecting to Spotify:", error.message);
-                    setAlertMessage("Failed to connect to Spotify");
-                }
-            } 
-            else {
-                console.log("Hash / access token not found");
-            }
-        };
-        getUserSpotifyInfo();
-    }, [navigate, setUser, user]);
-
-    useEffect(() => {
-        if (user?.isAuthenticated) {
-            navigate("/account/spotify");
+        // If Spotify sent an error back
+        if (error) {
+          setAlertMessage(`Spotify login error: ${error}`);
+          return;
         }
-    }, [navigate, user?.isAuthenticated]); // Allows useEffect hook to render only once. 
 
+        // 1) If redirected back with ?code=..., exchange it for access_token
+        if (code) {
+          const codeVerifier = sessionStorage.getItem(CODE_VERIFIER_KEY);
+          if (!codeVerifier) {
+            setAlertMessage("Missing PKCE code_verifier. Please try logging in again.");
+            return;
+          }
 
-    return (
-        <div className="spotify-login-container">
-            {user?.isAuthenticated && userInfo ? (
-                // Render if authenticated and userInfo is available
-                <>
-                <div>
-                    <h3>{alertMessage}</h3>
-                    <div>
-                        < br/><br/>
-                        <h4>Spotify Details:</h4>
-                        <p><b>User ID:</b> {userInfo.userId}</p>
-                        <p><b>Username:</b> {userInfo.username}</p>
-                        <p><b>Email:</b> {userInfo.email}</p>
-                        <br/><br/><br/>
-                        <button type="submit" onClick={() => navigate('/feed')}>View your feed!</button>
-                    </div>
-                </div>
-                </>
-            ) : (
-                <>
-                <div className="spotify-login-container">
-                    <h3>Nearly there! <br/> You need to connect your Spotify Account with TuneTalk</h3>
-                    <br/>
-                    <button type="submit" className="spotify-button" onClick={handleLogin}>Login to your Spotify Account</button>
-                    <br/><br/>
-                </div>
-                </>
-            )}
+          const body = new URLSearchParams({
+            client_id: CLIENT_ID,
+            grant_type: "authorization_code",
+            code,
+            redirect_uri: REDIRECT_URI,
+            code_verifier: codeVerifier,
+          });
+
+          const tokenRes = await fetch(SPOTIFY_TOKEN, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-www-form-urlencoded" },
+            body,
+          });
+
+          if (!tokenRes.ok) {
+            const text = await tokenRes.text();
+            throw new Error(`Token exchange failed (${tokenRes.status}): ${text}`);
+          }
+
+          const tokenJson = await tokenRes.json();
+          if (!tokenJson?.access_token) throw new Error("No access_token returned.");
+
+          storeToken(tokenJson.access_token, tokenJson.expires_in);
+
+          // clean URL: remove ?code=... (no reload)
+          window.history.replaceState(null, document.title, url.pathname);
+        }
+
+        // 2) Use stored token (works on refresh)
+        const token = getStoredToken();
+        if (!token) return;
+
+        // 3) Fetch Spotify profile
+        const userInfoResponse = await axios.get("https://api.spotify.com/v1/me", {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        const spotifyProfile = userInfoResponse.data;
+        if (!spotifyProfile) throw new Error("User information is not available.");
+
+        const spotifyUserInfo = {
+          userId: spotifyProfile.id,
+          userUrl: spotifyProfile.external_urls?.spotify,
+          username: spotifyProfile.display_name,
+          email: spotifyProfile.email,
+        };
+
+        setUserInfo(spotifyUserInfo);
+        setAlertMessage("Spotify account connected!");
+
+        localStorage.setItem("username", spotifyUserInfo.username || "");
+        localStorage.setItem("userSpotifyInfo", JSON.stringify(spotifyUserInfo));
+
+        // 4) Store in your MongoDB via backend
+        const res = await axios.post("http://localhost:8082/api/spotifylogin", {
+          spotifyID: spotifyProfile.id,
+          spotifyURL: spotifyProfile.external_urls?.spotify,
+          displayName: spotifyProfile.display_name,
+          spotifyEmail: spotifyProfile.email,
+        });
+
+        if (res.data?.status === "ok") {
+          setUser((prev) => ({
+            ...prev,
+            isAuthenticated: true,
+            spotifyAccount: spotifyUserInfo.username,
+          }));
+          navigate("/account/spotify");
+        } else {
+          throw new Error("Unable to store spotify account into TuneTalk's database.");
+        }
+      } catch (err) {
+        const status = err?.response?.status;
+        if (status === 401) clearStoredToken();
+        console.error("Error connecting to Spotify:", err);
+        setAlertMessage("Failed to connect to Spotify");
+      }
+    };
+
+    run();
+  }, [navigate, setUser]);
+
+  useEffect(() => {
+    if (user?.isAuthenticated) navigate("/account/spotify");
+  }, [navigate, user?.isAuthenticated]);
+
+  return (
+    <div className="spotify-login-container">
+      {user?.isAuthenticated && userInfo ? (
+        <div>
+          <h3>{alertMessage}</h3>
+          <div>
+            <br /><br />
+            <h4>Spotify Details:</h4>
+            <p><b>User ID:</b> {userInfo.userId}</p>
+            <p><b>Username:</b> {userInfo.username}</p>
+            <p><b>Email:</b> {userInfo.email}</p>
+            <br /><br /><br />
+            <button type="button" onClick={() => navigate("/feed")}>
+              View your feed!
+            </button>
+          </div>
         </div>
-    );
+      ) : (
+        <div className="spotify-login-container">
+          <h3>
+            Nearly there! <br /> You need to connect your Spotify Account with TuneTalk
+          </h3>
+          <br />
+          <button
+            type="button"
+            className="spotify-button"
+            onClick={handleLogin}
+          >
+            Login to your Spotify Account
+          </button>
+          <br /><br />
+          {alertMessage ? <p>{alertMessage}</p> : null}
+        </div>
+      )}
+    </div>
+  );
 };

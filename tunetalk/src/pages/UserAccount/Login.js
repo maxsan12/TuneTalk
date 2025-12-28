@@ -37,7 +37,6 @@ export const Login = () => {
                     profileImage: data.user.profileImage,
                     isAuthenticated: false // make false because user should only be authenticated once spotify login is successful.
                 });
-                localStorage.setItem('user', JSON.stringify(user));
                 console.log("user login authenticated in TuneTalk");
             } 
             else if (data.error === "user_not_found") {

@@ -5,7 +5,7 @@ const bcrypt = require("bcryptjs"); // using bycryptjs to encrypt passwords
 const JWT = require('jsonwebtoken') // using jsonwebtoken library
 const JWT_SECRET = "fghsdf123"; // secret key used to verify the json webtokens (note should be an env file, but because this is being marked, would be easier to not include in a env file). 
 const user = require("../../models/UserDetails"); // import user details model
-const { sendNotificationEmail, pushNotification,randomDelayGenerator } = require("../../utils/sendNotificationEmail");
+// const { sendNotificationEmail, pushNotification,randomDelayGenerator } = require("../../utils/sendNotificationEmail");
 
 // Function to validate email format with the correct pattern regex
 function emailRegex(email) {
@@ -40,6 +40,7 @@ router.post("/", async(req,res) => {
             // will generate a token with the user id in mongodb as well as their email and pass the jwt_secret variable 
             const token = JWT.sign({ id: existingUser.id, email: existingUser.email}, JWT_SECRET); 
             
+            /*
             //Created a timer that will generate a delay between 10 and 20 seconds
             const timer = randomDelayGenerator(10, 20); //Can adjust the timer values
             
@@ -48,6 +49,8 @@ router.post("/", async(req,res) => {
                 sendNotificationEmail(existingUser.email, existingUser.username);
                 pushNotification();
             }, timer * 1000); //Convert seconds to milliseconds
+            */
+
             // Return user's email along with token
             return res.json({
                 status: "ok", 

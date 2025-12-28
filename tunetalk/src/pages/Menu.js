@@ -9,13 +9,13 @@ export const Menu = () => {
     const navigate = useNavigate();
     
     const handleLoginButton = () => {
-        if (!user.isAuthenticated) {
+        if (!user?.isAuthenticated) {
             navigate('/account/login');
         }
         else {
-            navigate('/account/profile')
+            navigate('/account/profile');
         }
-    }
+    };
 
     return (
         <div className="menu-page">
